@@ -9,6 +9,8 @@ from email_utils import EmailUtils
 
 class MailSlurper(object):
     def __init__(self):
+        """This class downloads all emails in folders from your 163mail inbox
+        and writes them as raw UTF-8 text in simple Avro records for further processing."""
         self.utils = EmailUtils()
         self.username = None
         self.password = None
@@ -19,8 +21,9 @@ class MailSlurper(object):
         self.imap_folder = None
         self.id_list = None
         self.folder_count = None
-        """This class downloads all emails in folders from your 163mail inbox \
-        and writes them as raw UTF-8 text in simple Avro records for further processing."""
+        # Only the email BODY which RFC822.SIZE are smaller than 3M are fetched
+        # otherwise the email HEADER are fetched.
+        self.threshold_size = 3*1024*1024
 
     @staticmethod
     def init_directory(directory):
@@ -79,52 +82,46 @@ class MailSlurper(object):
     def timeout_handler(self, signum, frame):
         raise self.TimeoutException
 
+    def fetch_size(self, email_id):
+        size = 0
+        try:
+            status, data = self.imap.fetch(email_id, '(RFC822.SIZE)')
+        except imaplib.IMAP4_SSL.error or imaplib.IMAP4_SSL.abort:
+            return size
+        if status == 'OK' and data[0] is not None:
+            size = self.utils.get_size(data[0])
+        return size
+
     def fetch_email(self, email_id):
         # signal.signal(signal.SIGALRM, self.timeout_handler)
-        # signal.alarm(300000000)  # triger alarm in 30 seconds
+        # signal.alarm(3000)  # triger alarm in 30 seconds
 
-        # avro_record = dict()
-        # status = 'FAIL'
         try:
-            status, data = self.imap.fetch(email_id, '(UID RFC822)')
+            if self.fetch_size(email_id) < self.threshold_size:
+                status, data = self.imap.fetch(email_id, '(UID RFC822)')
+            else:
+                status, data = self.imap.fetch(email_id, '(UID RFC822.HEADER)')
             # 163's UID will get the thread of the message
         except self.TimeoutException:
             return 'TIMEOUT', {}, None
         except imaplib.IMAP4_SSL.abort:
             return 'ABORT', {}, None
 
-        # charset = None
         if status != 'OK' or data[0] is None:
             return 'ERROR', {}, None
         else:
             raw_thread_id = data[0][0]
-            # encoded_email = data[0][1]
             raw_email = data[0][1]
         try:
-            # charset = self.utils.get_charset(encoded_email)
-            # RFC2822 says default charset is us-ascii, which often saves us when no charset is specified
-            '''
-            if charset:
-                    pass
-            else:
-                    charset = 'us-ascii'
-            if charset:  # redundant, but saves our ass if we edit above
-                    # raw_email = encoded_email.decode(charset)
-                    thread_id = self.utils.get_thread_id(raw_thread_id)
-                    # print "CHARSET: " + charset
-                    avro_record, charset = self.utils.process_email(encoded_email, thread_id)
-            else:
-                    return 'UNICODE', {}, charset
-            '''
             thread_id = self.utils.get_thread_id(raw_thread_id)
             if thread_id is None:
                 return 'ERROR', {}, None
             else:
                 avro_record, charset = self.utils.process_email(raw_email, thread_id)
-                # except UnicodeDecodeError:
-                # return 'UNICODE', {}, charset
-        except:
-            return 'ERROR', {}, None
+        except UnicodeDecodeError:
+            return 'UNICODE', {}, None
+        # except:
+            # return 'ERROR', {}, None
         # Without a charset we pass bad chars to avro, and it dies. See AVRO-565.
         if charset:
             return status, avro_record, charset
@@ -146,8 +143,8 @@ class MailSlurper(object):
         except UnicodeDecodeError:
             sys.stderr.write("ERROR IN Writing EMAIL to Avro for UnicodeDecode issue, SKIPPED ONE\n")
             pass
-        except:
-            pass
+        # except:
+            # pass
             # END - Handle errors when writing into Avro storage
 
     def flush(self):
@@ -166,8 +163,7 @@ class MailSlurper(object):
                         self.flush()
                 elif status == 'ERROR' or status == 'PARSE' or status == 'UNICODE' \
                         or status == 'CHARSET' or status == 'FROM':
-                    sys.stderr.write("Problem fetching email id " + str(email_id) + ": " +
-                                     status + "\n")
+                    sys.stderr.write("Problem fetching email id " + str(email_id) + ": " + status + "\n")
                     continue
                 elif status == 'ABORT' or status == 'TIMEOUT':
                     sys.stderr.write("resetting imap for " + status + "\n")

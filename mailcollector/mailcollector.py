@@ -96,6 +96,7 @@ def main():
                 s, a, c = slurper.fetch_email(single_id)
                 if s == 'OK':
                     print s, c, a
+                    slurper.write(a)
                 else:
                     print "Problem fetching email ID: " + single_id + " - " + s
             # Otherwise grab them all
