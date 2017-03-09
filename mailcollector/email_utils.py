@@ -52,15 +52,30 @@ class EmailUtils(object):
         else:
             return 0
 
-    def parse_addrs(self, addr_string):
+    def parse_addrs(self, addr_string, first_charset):
         if addr_string:
-            addr_string = self.handle_header(addr_string)
+            # Some email addrs including real name and address are header-coding together
+            # but the others only code real name, so we need handle_header twice.
+            addr_string = addr_string.strip()
+            # First handle_header
+            if addr_string.startswith("=?") and addr_string.endswith("?="):
+                addr_string = self.handle_header(addr_string, first_charset)
             addresses = getaddresses([addr_string])
             validated = []
             for address in addresses:
                 address_pair = {'real_name': None, 'address': None}
                 if address[0]:
-                    address_pair['real_name'] = address[0]
+                    if address[0].startswith("=?") and address[0].endswith("?="):
+                        # Second handle_header
+                        address_pair['real_name'] = self.handle_header(address[0], first_charset)
+                    else:
+                        try:
+                            address_pair['real_name'] = address[0].decode(first_charset)
+                        except UnicodeDecodeError:
+                            address_pair['real_name'] = address[0]
+                        except UnicodeEncodeError:
+                            # address[0] has be decoded by the First handle_header
+                            address_pair['real_name'] = address[0]
                 if self.is_email(address[1]):
                     address_pair['address'] = address[1]
                 if not address[0] and not self.is_email(address[1]):
@@ -89,7 +104,7 @@ class EmailUtils(object):
             new_raws.append("=?" + raws[length-1])
         return new_raws
 
-    def handle_header(self, raw_header):
+    def handle_header(self, raw_header, first_charset):
         if raw_header is None or raw_header == '':
             return ''
         else:
@@ -108,18 +123,22 @@ class EmailUtils(object):
                 try:
                     tmp_decoded_header = t[0].decode(charset)
                 except UnicodeDecodeError:
-                    tmp_decoded_header = t[0]
+                    try:
+                        tmp_decoded_header = t[0].decode(first_charset)
+                    except UnicodeDecodeError:
+                        tmp_decoded_header = t[0]
                 decoded_header = decoded_header + tmp_decoded_header
             return decoded_header
 
     def process_email(self, raw_email, thread_id):
         msg = email.message_from_string(raw_email)
-        subject = self.handle_header(msg['Subject'])
-        print 'SUBJECT: ', subject
+        # Must parse to get the body firstly, and guess the charset used to decode some headers do not have charset.
         charset, body = self.get_body(msg)
-        from_values = self.parse_addrs(msg['From'])
+        subject = self.handle_header(msg['Subject'], charset)
+        print 'SUBJECT: ', subject
+        from_values = self.parse_addrs(msg['From'], charset)
         if from_values is not None:
-            from_value = self.parse_addrs(msg['From'])[0]
+            from_value = self.parse_addrs(msg['From'], charset)[0]
             print 'FROM: ', from_value['real_name'], from_value['address']
         else:
             from_value = ""
@@ -132,10 +151,10 @@ class EmailUtils(object):
             'date': self.parse_date(msg['Date']),
             'body': body,
             'from': from_value,
-            'tos': self.parse_addrs(msg['To']),
-            'ccs': self.parse_addrs(msg['Cc']),
-            'bccs': self.parse_addrs(msg['Bcc']),
-            'reply_tos': self.parse_addrs(msg['Reply-To'])
+            'tos': self.parse_addrs(msg['To'], charset),
+            'ccs': self.parse_addrs(msg['Cc'], charset),
+            'bccs': self.parse_addrs(msg['Bcc'], charset),
+            'reply_tos': self.parse_addrs(msg['Reply-To'], charset)
         })
         return avro_parts, charset
 
@@ -153,9 +172,22 @@ class EmailUtils(object):
                             first_charset = charset
                         payload = part.get_payload()
                         if content_transfer_encoding == 'base64':
-                            payload = base64.b64decode(payload).decode(charset)
+                            try:
+                                decode_payload = base64.b64decode(payload).decode(charset)
+                                payload = decode_payload
+                            except UnicodeDecodeError:
+                                payload = base64.b64decode(payload)
                         elif content_transfer_encoding == 'quoted-printable':
-                            payload = quopri.decodestring(payload).decode(charset)
+                            try:
+                                decode_payload = quopri.decodestring(payload).decode(charset)
+                                payload = decode_payload
+                            except UnicodeDecodeError:
+                                payload = quopri.decodestring(payload)
+                        elif content_transfer_encoding == '8bit' or content_transfer_encoding == '7bit':
+                            try:
+                                payload = payload.decode(charset)
+                            except UnboundLocalError:
+                                payload = payload
                         body += payload
         if first_charset is None:
             first_charset = 'us-ascii'

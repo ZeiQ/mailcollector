@@ -23,7 +23,7 @@ class MailSlurper(object):
         self.folder_count = None
         # Only the email BODY which RFC822.SIZE are smaller than 3M are fetched
         # otherwise the email HEADER are fetched.
-        self.threshold_size = 3*1024*1024
+        self.threshold_size = 2*1024*1024
 
     @staticmethod
     def init_directory(directory):
@@ -143,8 +143,9 @@ class MailSlurper(object):
         except UnicodeDecodeError:
             sys.stderr.write("ERROR IN Writing EMAIL to Avro for UnicodeDecode issue, SKIPPED ONE\n")
             pass
-        # except:
-            # pass
+        except io.AvroTypeException:
+            sys.stderr.write("ERROR IN Writing EMAIL to Avro for AvroTypeException issue, SKIPPED ONE\n")
+            raise
             # END - Handle errors when writing into Avro storage
 
     def flush(self):
